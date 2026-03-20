@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-智能读书 APP v3.1 - 莫兰迪主题 + 左右翻页 + 自动续读 + 目录导航
+智能读书 APP v3.2 - 莫兰迪主题 + 左右翻页 + 自动续读 + 目录导航 + TTS 修复
 运行：streamlit run app.py
+修复：Invalid rate '0%' 问题
 """
 
 import streamlit as st
@@ -224,6 +225,8 @@ if 'toc' not in st.session_state:
     st.session_state.toc = []
 if 'chapter_pages' not in st.session_state:
     st.session_state.chapter_pages = {}
+if 'user_notes' not in st.session_state:
+    st.session_state.user_notes = {}  # 笔记存储：{句子索引：笔记内容}
 
 SENTENCES_PER_PAGE = st.session_state.sentences_per_page
 
@@ -344,6 +347,7 @@ with st.sidebar:
             st.session_state.current_page = 0
             st.session_state.current_sentence = 0
             st.session_state.is_playing = False
+            st.session_state.user_notes = {}  # 重置笔记
             st.rerun()
     
     st.divider()
@@ -389,7 +393,11 @@ for i, sentence in enumerate(page_sentences):
     global_idx = st.session_state.current_page * SENTENCES_PER_PAGE + i
     is_current = global_idx == st.session_state.current_sentence
     css_class = "sentence current" if is_current else "sentence"
-    st.markdown(f"<div class='{css_class}' data-idx='{global_idx}'>{sentence}</div>", unsafe_allow_html=True)
+    
+    # 显示句子，如果有笔记则显示标记
+    has_note = global_idx in st.session_state.user_notes
+    note_marker = " 📝" if has_note else ""
+    st.markdown(f"<div class='{css_class}' data-idx='{global_idx}'>{sentence}{note_marker}</div>", unsafe_allow_html=True)
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -439,6 +447,44 @@ with col_jump:
         st.session_state.current_page = jump_to // SENTENCES_PER_PAGE
         st.rerun()
 
+# 笔记功能
+st.divider()
+st.subheader("📝 做笔记")
+
+# 当前句子笔记
+current_note = st.session_state.user_notes.get(st.session_state.current_sentence, "")
+new_note = st.text_area(
+    f"为当前句子做笔记（第 {st.session_state.current_sentence + 1} 句）",
+    value=current_note,
+    height=100
+)
+
+col_save, col_view = st.columns(2)
+with col_save:
+    if st.button("💾 保存笔记", use_container_width=True):
+        if new_note.strip():
+            st.session_state.user_notes[st.session_state.current_sentence] = new_note
+            st.success("✅ 笔记已保存！")
+        else:
+            # 删除空笔记
+            if st.session_state.current_sentence in st.session_state.user_notes:
+                del st.session_state.user_notes[st.session_state.current_sentence]
+                st.success("✅ 笔记已删除！")
+        st.rerun()
+
+with col_view:
+    if st.button("📋 查看所有笔记", use_container_width=True):
+        st.session_state.show_all_notes = not st.session_state.get('show_all_notes', False)
+        st.rerun()
+
+# 显示所有笔记
+if st.session_state.get('show_all_notes', False):
+    st.divider()
+    st.subheader("📋 我的笔记")
+    for idx, note in sorted(st.session_state.user_notes.items()):
+        sentence_text = st.session_state.sentences[idx][:50] + "..." if len(st.session_state.sentences[idx]) > 50 else st.session_state.sentences[idx]
+        st.info(f"**第 {idx + 1} 句**: {sentence_text}\n\n📝 {note}")
+
 # 朗读逻辑
 if st.session_state.is_playing and st.session_state.sentences:
     current_text = st.session_state.sentences[st.session_state.current_sentence]
@@ -448,11 +494,17 @@ if st.session_state.is_playing and st.session_state.sentences:
         st.info(f"🔊 正在朗读：{current_text[:50]}...")
     
     try:
-        asyncio.run(edge_tts.Communicate(
-            current_text,
-            voice=voice,
-            rate=f"{int((speed - 1) * 100)}%"
-        ).save("temp_audio.mp3"))
+        # ✅ 修复：计算语速偏移量，正常速度 (1.0) 时不设置 rate 参数
+        rate_offset = int((speed - 1) * 100)
+        if rate_offset == 0:
+            communicate = edge_tts.Communicate(current_text, voice=voice)
+        else:
+            communicate = edge_tts.Communicate(
+                current_text,
+                voice=voice,
+                rate=f"{rate_offset:+d}%"  # 使用 +10% 或 -20% 格式
+            )
+        asyncio.run(communicate.save("temp_audio.mp3"))
         
         st.audio("temp_audio.mp3", autoplay=True)
         
